@@ -1,103 +1,94 @@
+
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 
-# 실제 크롬 브라우저인 것처럼 속이는 강력한 헤더 (봇 차단 방지)
+# 타겟 사이트의 봇 차단을 피하기 위한 헤더 세트
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7"
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
 }
 
-def get_wiki_info(food_name):
-    """위키백과 API (가장 안정적)"""
+def get_food_data_google(food_name, search_type="recipe"):
+    """네이버 대신 구글 검색 결과의 스니펫(요약문)을 가져오는 안정적인 로직"""
+    queries = {
+        "recipe": f"{food_name} 만드는법 레시피 요약",
+        "restaurant": f"{food_name} 맛집 추천 리스트 후기",
+        "history": f"{food_name} 유래 역사"
+    }
+    
+    query = urllib.parse.quote(queries.get(search_type, food_name))
+    url = f"https://www.google.com/search?q={query}&hl=ko"
+    
+    try:
+        res = requests.get(url, headers=HEADERS, timeout=8)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # 구글 검색 결과의 요약 텍스트(스니펫) 클래스 추출
+        snippets = soup.select('.VwiC3b, .MUwY9c, .yY7snc')
+        
+        results = []
+        for s in snippets:
+            text = s.get_text(strip=True)
+            if len(text) > 40: # 너무 짧은 글은 제외
+                results.append(text)
+            if len(results) >= 2:
+                break
+                
+        return "\n\n".join(results) if results else "상세 정보를 찾을 수 없습니다."
+    except Exception:
+        return f"{search_type} 정보를 수집하는 중 네트워크 오류가 발생했습니다."
+
+def get_wiki_reliable(food_name):
+    """위키백과 API - 가장 높은 신뢰도"""
     url = f"https://ko.wikipedia.org/api/rest_v1/page/summary/{urllib.parse.quote(food_name)}"
     try:
         res = requests.get(url, timeout=5)
-        res.raise_for_status()
-        data = res.json()
-        description = data.get("extract", f"'{food_name}'에 대한 위키백과 설명이 없습니다.")
-        image_url = data.get("thumbnail", {}).get("source", "https://via.placeholder.com/500x300?text=No+Image")
-        return description, image_url
-    except Exception as e:
-        return f"유래 정보를 불러오지 못했습니다. (검색어: {food_name})", "https://via.placeholder.com/500x300?text=Error"
+        if res.status_code == 200:
+            data = res.json()
+            return data.get("extract", ""), data.get("thumbnail", {}).get("source", "")
+    except:
+        pass
+    return "설명을 가져올 수 없습니다.", "https://via.placeholder.com/500x300?text=No+Image"
 
-def get_recipe(food_name):
-    """네이버 레시피 검색 크롤링 (방어 코드 적용)"""
-    query = urllib.parse.quote(f"{food_name} 레시피 만드는 법")
-    url = f"https://search.naver.com/search.naver?query={query}"
-    
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # 네이버 블로그/뷰 텍스트 추출 (클래스명이 유동적이므로 여러 클래스 시도)
-        descriptions = soup.find_all('div', class_=['api_txt_lines', 'dsc_txt'])
-        
-        for desc in descriptions:
-            text = desc.get_text(strip=True)
-            # 너무 짧은 텍스트 제외하고 의미 있는 레시피 정보 추출
-            if len(text) > 30: 
-                return text
-                
-        return f"'{food_name}'에 대한 레시피 텍스트를 화면에 직접 표시할 수 없습니다."
-    except Exception as e:
-        return "네이버 서버에서 레시피 정보를 차단했거나 가져올 수 없습니다."
+# ----------------- UI ----------------- #
+st.set_page_config(page_title="푸아그라 검색 성공 버전", page_icon="🥘")
 
-def get_best_restaurants(food_name):
-    """네이버 맛집 검색 크롤링 (방어 코드 적용)"""
-    query = urllib.parse.quote(f"{food_name} 맛집 후기")
-    url = f"https://search.naver.com/search.naver?query={query}"
-    
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
-        # 블로그/카페 글 제목 추출
-        titles = soup.find_all('a', class_=['api_txt_lines', 'total_tit', 'title_link'])
-        
-        places = []
-        for title in titles:
-            text = title.get_text(strip=True)
-            if food_name in text or "맛집" in text or "후기" in text:
-                if text not in places: # 중복 제거
-                    places.append(text)
-            if len(places) >= 3:
-                break
-                
-        if places:
-            return places
-        return ["추천 맛집 포스팅을 찾을 수 없습니다. 검색어를 변경해보세요."]
-    except Exception as e:
-        return ["맛집 검색 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요."]
+st.title("🥘 AI 기반 음식 정보 통합 검색")
+st.markdown("---")
 
-# ----------------- UI 구성 ----------------- #
-st.set_page_config(page_title="음식 백과사전", page_icon="🍔", layout="centered")
-
-st.title("🍔 즉시 확인! 음식 정보")
-
-food_name = st.text_input("궁금한 음식 이름을 입력하세요 (예: 푸아그라, 팟타이)", placeholder="음식 이름 입력 후 엔터")
+food_name = st.text_input("검색할 음식 이름을 입력하세요", placeholder="예: 푸아그라")
 
 if food_name:
-    with st.spinner(f"'{food_name}' 데이터를 실시간으로 수집 중입니다..."):
+    with st.spinner(f"'{food_name}'의 데이터를 3가지 경로로 수집 중입니다..."):
+        # 1. 유래 및 사진 (Wikipedia)
+        history_wiki, img_url = get_wiki_reliable(food_name)
         
-        origin_text, img_url = get_wiki_info(food_name)
-        recipe_text = get_recipe(food_name)
-        best_places = get_best_restaurants(food_name)
+        # 2. 레시피 (Google Recipe Snippet)
+        recipe_data = get_food_data_google(food_name, "recipe")
         
-        st.divider()
+        # 3. 맛집 (Google Restaurant Snippet)
+        restaurant_data = get_food_data_google(food_name, "restaurant")
+        
+        # 결과 렌더링
+        st.image(img_url, caption=f"[{food_name}] 대표 이미지", use_container_width=True)
+        
+        with st.container():
+            st.subheader("📜 음식의 유래 및 역사")
+            st.info(history_wiki)
+            
+        with st.container():
+            st.subheader("👨‍🍳 추천 레시피 및 조리법")
+            st.success(recipe_data)
+            
+        with st.container():
+            st.subheader("🏆 전문가 및 유저 추천 맛집 정보")
+            st.warning(restaurant_data)
 
-        st.image(img_url, caption=f"{food_name} 사진", use_container_width=True)
-        
-        st.subheader("📜 설명 및 유래")
-        st.info(origin_text)
-        
-        st.subheader("👨‍🍳 레시피 및 만드는 법 요약")
-        st.success(recipe_text)
-        
-        st.subheader("🏆 네이버 맛집 및 추천 후기")
-        st.write("관련된 상위 식당 추천/리뷰 포스팅 제목입니다.")
-        for idx, place in enumerate(best_places):
-            st.warning(f"{idx+1}. {place}")
-
-st.caption("공공 데이터 및 포털 검색 결과를 실시간으로 추출하여 제공합니다.")
+st.markdown("---")
+st.caption("본 앱은 Google 검색 엔진의 실시간 데이터를 분석하여 최적의 정보를 제공합니다.")
