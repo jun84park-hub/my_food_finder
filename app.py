@@ -3,43 +3,93 @@ import requests
 from bs4 import BeautifulSoup
 import urllib.parse
 
-# 페이지 설정 (모바일 최적화)
-st.set_page_config(page_title="음식 백과사전", page_icon="🍴")
+# ----------------- 데이터 수집 함수 ----------------- #
 
-st.title("🍴 음식 정보 검색")
-st.write("음식 이름을 입력하면 사진, 레시피, 유래, 맛집 정보를 찾아줍니다.")
+def get_wiki_info(food_name):
+    """위키백과 API를 사용하여 정확한 음식 유래와 고화질 이미지를 즉시 가져옵니다."""
+    url = f"https://ko.wikipedia.org/api/rest_v1/page/summary/{food_name}"
+    try:
+        res = requests.get(url).json()
+        description = res.get("extract", f"'{food_name}'에 대한 백과사전 설명이 없습니다.")
+        # 이미지가 없을 경우 대체 이미지 제공
+        image_url = res.get("thumbnail", {}).get("source", "https://via.placeholder.com/500x300?text=No+Image+Found")
+        return description, image_url
+    except Exception:
+        return "정보를 불러오는데 실패했습니다.", "https://via.placeholder.com/500x300?text=Error"
 
-food_name = st.text_input("어떤 음식이 궁금하신가요?", placeholder="예: 비빔밥, 똠양꿍")
+def get_recipe(food_name):
+    """네이버 검색을 통해 상위 레시피 요약 텍스트를 바로 가져옵니다."""
+    url = f"https://search.naver.com/search.naver?query={food_name}+황금레시피+만드는법"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # 블로그 검색 결과의 본문 요약 발췌
+        snippets = soup.select('.api_txt_lines.dsc_txt')
+        if snippets:
+            return snippets[0].text
+        return "자세한 레시피 정보를 화면에 바로 띄울 수 없습니다. 검색어를 바꿔보세요."
+    except Exception:
+        return "레시피 정보를 불러오는 중 오류가 발생했습니다."
+
+def get_best_restaurants(food_name):
+    """
+    네이버 검색을 활용하여 사람들이 가장 많이 추천하는 상위 3개 맛집의 
+    이름이나 리뷰 제목을 긁어와 바로 보여줍니다.
+    """
+    url = f"https://search.naver.com/search.naver?query={food_name}+전국+3대+맛집+추천"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        # 상위 노출되는 포스팅의 제목들 추출
+        titles = soup.select('.api_txt_lines.total_tit')
+        
+        if titles:
+            places = []
+            for i, title in enumerate(titles[:3]):
+                places.append(f"{i+1}. {title.text}")
+            return places
+        return ["추천 맛집 데이터를 찾을 수 없습니다."]
+    except Exception:
+        return ["맛집 검색 중 오류가 발생했습니다."]
+
+# ----------------- 화면 UI 구성 ----------------- #
+
+st.set_page_config(page_title="즉시 보는 음식 백과", page_icon="🍔", layout="centered")
+
+st.title("🍔 음식 정보 즉시 검색기")
+st.write("음식 이름을 입력하면 클릭 없이 **사진, 유래, 레시피, 1위 맛집**이 한 번에 나옵니다.")
+
+# 검색창
+food_name = st.text_input("궁금한 음식 이름을 입력하세요 (예: 떡볶이, 평양냉면)")
 
 if food_name:
-    with st.spinner('정보를 가져오는 중입니다...'):
-        # 1. 사진 검색 (구글 이미지 검색 결과 페이지 링크)
-        encoded_food = urllib.parse.quote(food_name)
-        img_url = f"https://www.google.com/search?q={encoded_food}+음식+사진&tbm=isch"
+    # 로딩 애니메이션
+    with st.spinner(f"인터넷에서 '{food_name}'의 최고 데이터를 모으는 중입니다..."):
         
-        # 2. 레시피 및 유래 (네이버 검색 활용)
-        # 실제 앱에서는 API를 쓰는 것이 좋으나, 여기서는 결과 페이지 연결 방식으로 구현
-        recipe_url = f"https://search.naver.com/search.naver?query={encoded_food}+레시피"
-        history_url = f"https://search.naver.com/search.naver?query={encoded_food}+유래"
+        # 정보 긁어오기
+        origin_text, img_url = get_wiki_info(food_name)
+        recipe_text = get_recipe(food_name)
+        best_places = get_best_restaurants(food_name)
         
-        # 3. 맛집 정보 (네이버 지도)
-        map_url = f"https://map.naver.com/v5/search/{encoded_food} 맛집"
-
-        # 결과 화면 출력
         st.divider()
+
+        # 1. 사진 표시 (링크 이동 없이 화면에 바로 출력)
+        st.image(img_url, caption=f"{food_name} 대표 사진", use_container_width=True)
         
-        col1, col2 = st.columns(2)
-        with col1:
-            st.link_button("📸 대표 사진 보기", img_url, use_container_width=True)
-        with col2:
-            st.link_button("📍 주변 맛집 찾기", map_url, use_container_width=True)
+        # 2. 음식의 유래 표시
+        st.subheader("📜 음식의 유래 및 설명")
+        st.info(origin_text)
+        
+        # 3. 레시피 요약 표시
+        st.subheader("👨‍🍳 핵심 레시피 요약")
+        st.success(recipe_text)
+        
+        # 4. 평가가 좋은 맛집 리스트 직접 표시
+        st.subheader("🏆 네이버 추천 상위 맛집 리스트")
+        st.write("검색 결과 가장 평가가 좋고 많이 언급된 식당 정보입니다.")
+        for place in best_places:
+            st.warning(place)
 
-        with st.expander("👨‍🍳 레시피(만드는 법) 보기", expanded=True):
-            st.write(f"'{food_name}'의 상세 레시피는 아래 링크에서 확인할 수 있습니다.")
-            st.markdown(f"[네이버 레시피 검색 결과 바로가기]({recipe_url})")
-
-        with st.expander("📜 음식의 유래 보기"):
-            st.write(f"'{food_name}'이(가) 어디서 시작되었는지 궁금하신가요?")
-            st.markdown(f"[네이버 유래/백과사전 검색 결과 바로가기]({history_url})")
-
-st.caption("공공 데이터 및 포털 검색 결과를 활용합니다.")
+st.caption("※ 데이터는 위키백과 및 네이버 실시간 검색 결과를 즉시 추출하여 제공합니다.")
